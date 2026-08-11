@@ -1,7 +1,7 @@
 --[[
-IF YOU'RE IN STUDIO MAKE SURE TO REMOVE 'isRealFS' AND WHERE ITS USED
-local writefile = isRealFS and writefile or function --> local writefile = function
-same with appendfile, readfile
+in Roblox Studio: insert it in ServerScriptService as a ModuleScript named 'TaskQueue' or your namings
+local Queue = require(game.ServerScriptService.TaskQueue)
+You should know it uses DataStore for 'files'
 ]]
 local Queue = (function()
 	local HttpService = game:GetService("HttpService")
@@ -9,6 +9,7 @@ local Queue = (function()
 	local DataStoreService = game:GetService("DataStoreService")
 
 	local VirtualFS = {}
+	local dirtyFiles = {}
 	local StudioStore = nil
 	local isRealFS = (typeof(writefile) == "function" and typeof(readfile) == "function")
 
@@ -18,23 +19,38 @@ local Queue = (function()
 		end)
 	end
 
-	local function SaveToStudioStore(filePath, content)
-		if StudioStore then
-			pcall(function()
-				StudioStore:SetAsync(filePath, content)
-			end)
+	local function FlushStudioStore()
+		if not StudioStore or not next(dirtyFiles) then return end
+
+		for filePath in pairs(dirtyFiles) do
+			local content = VirtualFS[filePath]
+			if content ~= nil then
+				pcall(function()
+					StudioStore:SetAsync(filePath, content)
+				end)
+			end
+			dirtyFiles[filePath] = nil
+			task.wait(0.5)
 		end
 	end
 
-	local writefile = isRealFS and writefile or function(filePath, content)
+	if not isRealFS and RunService:IsServer() then
+		game:BindToClose(function()
+			FlushStudioStore()
+		end)
+	end
+
+	local Writefile = isRealFS and writefile or function(filePath, content)
 		VirtualFS[filePath] = tostring(content or "")
+		dirtyFiles[filePath] = true
 	end
 
-	local appendfile = (isRealFS and typeof(appendfile) == "function") and appendfile or function(filePath, content)
+	local Appendfile = (isRealFS and typeof(appendfile) == "function") and appendfile or function(filePath, content)
 		VirtualFS[filePath] = (VirtualFS[filePath] or "") .. tostring(content or "")
+		dirtyFiles[filePath] = true
 	end
 
-	local readfile = isRealFS and readfile or function(filePath)
+	local Readfile = isRealFS and readfile or function(filePath)
 		if VirtualFS[filePath] ~= nil then
 			return VirtualFS[filePath]
 		end
@@ -62,17 +78,13 @@ local Queue = (function()
 	local function WriteChunkedInternal(filePath, content, chunkSize)
 		chunkSize = (type(chunkSize) == "number" and chunkSize) or 50000
 
-		writefile(filePath, "")
+		Writefile(filePath, "")
 
 		local totalLen = #content
 		for i = 1, totalLen, chunkSize do
 			local chunk = string.sub(content, i, math.min(i + chunkSize - 1, totalLen))
-			appendfile(filePath, chunk)
+			Appendfile(filePath, chunk)
 			task.wait()
-		end
-
-		if not isRealFS then
-			SaveToStudioStore(filePath, VirtualFS[filePath])
 		end
 	end
 
@@ -172,7 +184,7 @@ local Queue = (function()
 
 	local function ReadJsonChunked(filePath, callback)
 		Load(function()
-			local raw = readfile(filePath)
+			local raw = Readfile(filePath)
 			task.wait()
 			return HttpService:JSONDecode(raw)
 		end, { Callback = callback })
@@ -191,6 +203,7 @@ local Queue = (function()
 	self.WriteFileChunked = WriteFileChunked
 	self.SaveTableChunked = SaveTableChunked
 	self.ReadJsonChunked = ReadJsonChunked
+	self.Flush = FlushStudioStore
 	self.Pause = Pause
 	self.Resume = Resume
 	self.Clear = Clear
