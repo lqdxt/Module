@@ -1,5 +1,7 @@
 --[[
 Supports environments 'isRealFS' but usually focused in studio.
+Exc = performance, tasks
+Studio = saving data, etc
 in Roblox Studio: insert it in ServerScriptService as a ModuleScript named 'TaskQueue' or your namings
 local Queue = require(game.ServerScriptService.TaskQueue)
 You should know it uses DataStore for 'files'
