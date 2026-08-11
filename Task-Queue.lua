@@ -1,13 +1,17 @@
 local Queue = (function()
 	local HttpService = game:GetService("HttpService")
+	local RunService = game:GetService("RunService")
 	local DataStoreService = game:GetService("DataStoreService")
-	
+
 	local VirtualFS = {}
 	local StudioStore = nil
-	
-	pcall(function()
-		StudioStore = DataStoreService:GetDataStore("StudioVirtualFS")
-	end)
+	local isRealFS = (typeof(writefile) == "function" and typeof(readfile) == "function")
+
+	if not isRealFS and RunService:IsServer() then
+		pcall(function()
+			StudioStore = DataStoreService:GetDataStore("StudioVirtualFS")
+		end)
+	end
 
 	local function SaveToStudioStore(filePath, content)
 		if StudioStore then
@@ -16,23 +20,20 @@ local Queue = (function()
 			end)
 		end
 	end
-	
-	local isRealFS = typeof(writefile) == "function"
-	
-	local writefile = isRealFS and writefile or function(filePath, content)
+
+	local rawWritefile = isRealFS and writefile or function(filePath, content)
 		VirtualFS[filePath] = tostring(content or "")
-		SaveToStudioStore(filePath, VirtualFS[filePath])
 	end
 
-	local appendfile = typeof(appendfile) == "function" and appendfile or function(filePath, content)
+	local rawAppendfile = (isRealFS and typeof(appendfile) == "function") and appendfile or function(filePath, content)
 		VirtualFS[filePath] = (VirtualFS[filePath] or "") .. tostring(content or "")
 	end
 
-	local readfile = typeof(readfile) == "function" and readfile or function(filePath)
+	local rawReadfile = isRealFS and readfile or function(filePath)
 		if VirtualFS[filePath] ~= nil then
 			return VirtualFS[filePath]
 		end
-		
+
 		if StudioStore then
 			local ok, data = pcall(function()
 				return StudioStore:GetAsync(filePath)
@@ -42,7 +43,7 @@ local Queue = (function()
 				return data
 			end
 		end
-		
+
 		error("File not found: " .. tostring(filePath), 2)
 	end
 
@@ -54,56 +55,38 @@ local Queue = (function()
 	local onError = nil
 
 	local function WriteChunkedInternal(filePath, content, chunkSize)
-		chunkSize = chunkSize or 50000
-		
-		writefile(filePath, "")
-		
+		chunkSize = (type(chunkSize) == "number" and chunkSize) or 50000
+
+		rawWritefile(filePath, "")
+
 		local totalLen = #content
 		for i = 1, totalLen, chunkSize do
 			local chunk = string.sub(content, i, math.min(i + chunkSize - 1, totalLen))
-			appendfile(filePath, chunk)
+			rawAppendfile(filePath, chunk)
 			task.wait()
 		end
-		
-		if typeof(writefile) ~= "function" then
+
+		if not isRealFS then
 			SaveToStudioStore(filePath, VirtualFS[filePath])
 		end
 	end
 
-	local function MakeFunctionFileSafe(fn)
-		local env = getfenv(fn)
-		local safeEnv = setmetatable({
-			writefile = WriteChunkedInternal,
-			appendfile = appendfile,
-			readfile = function(filePath)
-				local content = readfile(filePath)
-				task.wait()
-				return content
-			end
-		}, {
-			__index = env,
-			__newindex = env
-		})
-		
-		setfenv(fn, safeEnv)
-	end
-
 	local function process()
 		processing = true
-		
+
 		while head <= #queue do
 			while paused do
 				task.wait(0.1)
 			end
-			
+
 			local item = queue[head]
 			queue[head] = nil
 			head += 1
-			
+
 			if item then
 				local results = { pcall(item.fn, table.unpack(item.args)) }
 				local ok = results[1]
-				
+
 				if ok then
 					if item.callback then
 						task.spawn(item.callback, true, table.unpack(results, 2))
@@ -113,20 +96,20 @@ local Queue = (function()
 					if onError then
 						task.spawn(onError, err, item.fn)
 					else
-						warn("[Loader] Function execution error: " .. tostring(err))
+						warn("[Queue] Function execution error: " .. tostring(err))
 					end
-					
+
 					if item.callback then
 						task.spawn(item.callback, false, err)
 					end
 				end
 			end
-			
+
 			if head <= #queue and queueDelay > 0 then
 				task.wait(queueDelay)
 			end
 		end
-		
+
 		table.clear(queue)
 		head = 1
 		processing = false
@@ -138,29 +121,30 @@ local Queue = (function()
 		else
 			opts = opts or {}
 		end
-		
-		if opts.HasFile then
-			MakeFunctionFileSafe(fn)
-		end
-		
+
 		local item = {
 			fn = fn,
 			args = opts.Args or {},
 			callback = opts.Callback,
 		}
-		
+
 		if opts.Priority then
 			table.insert(queue, head, item)
 		else
 			table.insert(queue, item)
 		end
-		
+
 		if not processing then
 			task.spawn(process)
 		end
 	end
 
 	local function WriteFileChunked(filePath, content, chunkSize, callback)
+		if type(chunkSize) == "function" then
+			callback = chunkSize
+			chunkSize = 50000
+		end
+
 		Load(function()
 			WriteChunkedInternal(filePath, content, chunkSize)
 			return true
@@ -168,6 +152,11 @@ local Queue = (function()
 	end
 
 	local function SaveTableChunked(filePath, dataTable, chunkSize, callback)
+		if type(chunkSize) == "function" then
+			callback = chunkSize
+			chunkSize = 50000
+		end
+
 		Load(function()
 			local jsonStr = HttpService:JSONEncode(dataTable)
 			task.wait()
@@ -178,40 +167,19 @@ local Queue = (function()
 
 	local function ReadJsonChunked(filePath, callback)
 		Load(function()
-			local raw = readfile(filePath)
+			local raw = rawReadfile(filePath)
 			task.wait()
 			return HttpService:JSONDecode(raw)
 		end, { Callback = callback })
 	end
 
-	local function Pause()
-		paused = true
-	end
-
-	local function Resume()
-		paused = false
-	end
-
-	local function Clear()
-		table.clear(queue)
-		head = 1
-	end
-
-	local function SetDelay(seconds)
-		queueDelay = seconds or 0
-	end
-
-	local function SetErrorHandler(fn)
-		onError = fn
-	end
-
-	local function GetQueueLength()
-		return (#queue - head + 1)
-	end
-
-	local function IsProcessing()
-		return processing
-	end
+	local function Pause() paused = true end
+	local function Resume() paused = false end
+	local function Clear() table.clear(queue) head = 1 end
+	local function SetDelay(seconds) queueDelay = seconds or 0 end
+	local function SetErrorHandler(fn) onError = fn end
+	local function GetQueueLength() return (#queue - head + 1) end
+	local function IsProcessing() return processing end
 
 	local self = {}
 	self.Load = Load
@@ -226,6 +194,6 @@ local Queue = (function()
 	self.GetQueueLength = GetQueueLength
 	self.IsProcessing = IsProcessing
 	return self
-end)
+end)()
 
 return Queue
