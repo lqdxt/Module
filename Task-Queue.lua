@@ -1,3 +1,8 @@
+--[[
+IF YOU'RE IN STUDIO MAKE SURE TO REMOVE 'isRealFS' AND WHERE ITS USED
+local writefile = isRealFS and writefile or function --> local writefile = function
+same with appendfile, readfile
+]]
 local Queue = (function()
 	local HttpService = game:GetService("HttpService")
 	local RunService = game:GetService("RunService")
@@ -21,15 +26,15 @@ local Queue = (function()
 		end
 	end
 
-	local rawWritefile = isRealFS and writefile or function(filePath, content)
+	local writefile = isRealFS and writefile or function(filePath, content)
 		VirtualFS[filePath] = tostring(content or "")
 	end
 
-	local rawAppendfile = (isRealFS and typeof(appendfile) == "function") and appendfile or function(filePath, content)
+	local appendfile = (isRealFS and typeof(appendfile) == "function") and appendfile or function(filePath, content)
 		VirtualFS[filePath] = (VirtualFS[filePath] or "") .. tostring(content or "")
 	end
 
-	local rawReadfile = isRealFS and readfile or function(filePath)
+	local readfile = isRealFS and readfile or function(filePath)
 		if VirtualFS[filePath] ~= nil then
 			return VirtualFS[filePath]
 		end
@@ -57,12 +62,12 @@ local Queue = (function()
 	local function WriteChunkedInternal(filePath, content, chunkSize)
 		chunkSize = (type(chunkSize) == "number" and chunkSize) or 50000
 
-		rawWritefile(filePath, "")
+		writefile(filePath, "")
 
 		local totalLen = #content
 		for i = 1, totalLen, chunkSize do
 			local chunk = string.sub(content, i, math.min(i + chunkSize - 1, totalLen))
-			rawAppendfile(filePath, chunk)
+			appendfile(filePath, chunk)
 			task.wait()
 		end
 
@@ -167,7 +172,7 @@ local Queue = (function()
 
 	local function ReadJsonChunked(filePath, callback)
 		Load(function()
-			local raw = rawReadfile(filePath)
+			local raw = readfile(filePath)
 			task.wait()
 			return HttpService:JSONDecode(raw)
 		end, { Callback = callback })
